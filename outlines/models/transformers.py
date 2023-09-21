@@ -79,6 +79,7 @@ class Transformers:
         ## ADD: ensure same device
         ## because it occurs cuda device errors in a6000, cuda11.8
         input_ids = input_ids.to(self.device)
+        attention_mask = attention_mask.to(self.device)
         
         output = self.model(
             input_ids,
