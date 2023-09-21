@@ -92,8 +92,8 @@ class Transformers:
         ## ADD: calculate on cpu
         ## it references huggingface pipeline implementation
         ## https://github.com/huggingface/transformers/blob/main/src/transformers/pipelines/base.py#L942
-        #next_token_logits = output.logits[:, -1, :]
-        next_token_logits = output.logits.cpu()[:, -1, :]
+        next_token_logits = output.logits[:, -1, :]
+        #next_token_logits = output.logits.cpu()[:, -1, :]
         
         next_token_logits = next_token_logits.reshape(batch_shape + (-1,))
 
