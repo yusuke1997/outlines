@@ -76,6 +76,10 @@ class Transformers:
         num_tokens = input_ids.shape[-1]
         input_ids = input_ids.reshape(math.prod(batch_shape), num_tokens)
 
+        ## ADD: ensure same device
+        ## because it occurs cuda device errors in a6000, cuda11.8
+        input_ids = input_ids.to(self.device)
+        
         output = self.model(
             input_ids,
             attention_mask=attention_mask,
@@ -83,8 +87,13 @@ class Transformers:
             output_attentions=False,
             output_hidden_states=False,
         )
-        next_token_logits = output.logits[:, -1, :]
 
+        ## ADD: calculate on cpu
+        ## it references huggingface pipeline implementation
+        ## https://github.com/huggingface/transformers/blob/main/src/transformers/pipelines/base.py#L942
+        #next_token_logits = output.logits[:, -1, :]
+        next_token_logits = output.logits.cpu()[:, -1, :]
+        
         next_token_logits = next_token_logits.reshape(batch_shape + (-1,))
 
         return next_token_logits
