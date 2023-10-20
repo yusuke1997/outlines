@@ -6,13 +6,12 @@ build-backend = "setuptools.build_meta"
 name = "outlines"
 authors= [{name = "Outlines Developers"}]
 description = "Probabilistic Generative Model Programming"
-requires-python = ">=3.10"
+requires-python = ">=3.8"
 keywords=[
-    "normal computing",
     "machine learning",
     "deep learning",
     "language models",
-    "diffusion models",
+    "guided generation",
 ]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
@@ -34,6 +33,8 @@ dependencies = [
    "scipy",
    "tenacity",
    "torch",
+   "numba",
+   "joblib",
 ]
 dynamic = ["version"]
 
@@ -48,6 +49,7 @@ test = [
     "diff-cover",
     "accelerate",
     "beartype<0.16.0",
+    "datasets",
 ]
 
 [project.urls]
@@ -62,6 +64,9 @@ content-type = "text/markdown"
 [tool.setuptools]
 packages = ["outlines"]
 
+[tool.setuptools.package-data]
+"outlines" = ["py.typed"]
+
 [tool.setuptools_scm]
 write_to = "outlines/_version.py"
 
@@ -69,6 +74,7 @@ write_to = "outlines/_version.py"
 testpaths = ["tests"]
 filterwarnings = [
     "error",
+    "ignore::numba.core.errors.NumbaPendingDeprecationWarning",
     "ignore::FutureWarning:transformers.*",
     "ignore::FutureWarning:diffusers.*",
     "ignore::UserWarning:torch.cuda.*"
@@ -81,7 +87,7 @@ exclude=["examples"]
 module = [
     "diffusers",
     "jinja2",
-    "joblib",
+    "joblib.*",
     "openai",
     "numpy.*",
     "perscache.*",
@@ -96,6 +102,8 @@ module = [
     "transformers.*",
     "lark.*",
     "interegular.*",
+    "datasets.*",
+    "numba.*",
 ]
 ignore_missing_imports = true
 

@@ -9,6 +9,8 @@ from pydantic import BaseModel, constr
 
 import outlines.models as models
 import outlines.text.generate as generate
+from outlines.models.transformers import TransformersTokenizer
+from outlines.text.fsm import reduced_vocabulary
 
 
 def test_transformers_integration_continuation():
@@ -56,8 +58,16 @@ def test_transformers_various_regexes():
     model = models.transformers(model_name, device="cpu")
     prompt = "Write an email address"
     regex_str = r"([a-z]{10})@([a-z]{5})\.([a-z]{3})"
-    sequence = generate.regex(model, regex_str)(prompt, rng=rng)
+    generator = generate.regex(model, regex_str)
+
+    # One prompt
+    sequence = generator(prompt, rng=rng)
     assert re.fullmatch(regex_str, sequence) is not None
+
+    # Two prompts
+    sequence = generator([prompt, prompt], rng=rng)
+    assert re.fullmatch(regex_str, sequence[0]) is not None
+    assert re.fullmatch(regex_str, sequence[1]) is not None
 
 
 def test_transformers_integration_integer():
@@ -233,7 +243,7 @@ def test_transformers_logits_vocab_size():
 
     # Artificially increase the weights/logits size relative
     # to the vocabulary
-    model.model.resize_token_embeddings(pad_to_multiple_of=2)
+    model.model.resize_token_embeddings(pad_to_multiple_of=3)
 
     assert len(model.tokenizer.vocabulary) == 1024
     assert model.model.base_model.wte.weight.shape[0] == 1026
@@ -245,3 +255,46 @@ def test_transformers_logits_vocab_size():
 
     masked_logits = generator("blah", rng=rng)
     assert masked_logits == "True"
+
+
+def test_transformers_reduced_vocabulary_caching():
+    tokenizer = TransformersTokenizer("gpt2")
+    tokenizer2 = TransformersTokenizer("gpt2")
+
+    # TODO: We might actually want only one copy of a given tokenizer.
+    assert tokenizer is not tokenizer2
+
+    vocab = reduced_vocabulary(tokenizer)
+    vocab2 = reduced_vocabulary(tokenizer2)
+
+    assert vocab2 is vocab
+
+
+def test_custom_sampler():
+    model_name = "hf-internal-testing/tiny-random-GPTJForCausalLM"
+
+    model = models.transformers(model_name)
+
+    seen = False
+    target_token_ids = model.tokenizer.encode(["c"])[0]
+
+    def biased_sampler(
+        logits: torch.DoubleTensor, samples: int, *_
+    ) -> torch.DoubleTensor:
+        nonlocal seen
+
+        if not seen:
+            seen = True
+            return target_token_ids
+        else:
+            return torch.tensor([[model.tokenizer.eos_token_id]])
+
+    generator = generate.choice(model, ["a", "b", "c"], sampler=biased_sampler)
+    sequence = generator(
+        """What is 1+1?
+    a. 3
+    b. 4
+    c. 2"""
+    )
+
+    assert sequence == "c"

@@ -1,7 +1,7 @@
 import itertools
 import json
 import re
-from typing import Dict
+from typing import Callable, Dict
 
 STRING_INNER = r'(?:[^"\\\x00-\x1f\x7f-\x9f]|\\.)'
 STRING = f'"{STRING_INNER}*"'
@@ -43,6 +43,45 @@ def build_regex_from_schema(schema: str):
     return regex
 
 
+def _ref_resolver(schema: Dict) -> Callable[[str], Dict]:
+    cache: Dict[str, Dict] = dict()
+
+    if "$id" in schema:
+        cache[schema["$id"]] = schema
+
+    if "$defs" in schema:
+        for definition, annotation in schema["$defs"].items():
+            cache[f"#/$defs/{definition}"] = annotation
+
+            if "$id" in annotation:
+                cache[annotation["$id"]] = annotation
+
+    def resolver(reference: str) -> Dict:
+        """Resolve a $ref reference in the context of the top-level schema."""
+
+        if reference in cache:
+            return cache[reference]
+
+        path = reference.split("/")
+
+        # Navigate through the top-level schema based on the path
+        subschema = schema
+
+        if path[0] != "#":
+            raise ValueError(f"Unable to resolve reference: {reference}")
+
+        for step in path[1:]:
+            if step in subschema:
+                subschema = subschema[step]
+            else:
+                raise ValueError(f"Unable to resolve reference: {reference}")
+
+        cache[reference] = subschema
+        return subschema
+
+    return resolver
+
+
 def build_schedule_from_schema(schema: str):
     """Turn a JSON schema into a regex that matches any JSON object that follows
     this schema.
@@ -73,13 +112,7 @@ def build_schedule_from_schema(schema: str):
     """
     schema = json.loads(schema)
 
-    # Find object definitions in the schema, if any
-    definitions = {}
-    if "$defs" in schema:
-        for definition, annotation in schema["$defs"].items():
-            definitions[f"#/$defs/{definition}"] = annotation
-
-    schema = expand_json_schema(schema, definitions)
+    schema = expand_json_schema(schema, resolver=_ref_resolver(schema))
     schedule = build_schedule_from_instance(schema)
 
     # Concatenate adjacent strings
@@ -92,20 +125,38 @@ def build_schedule_from_schema(schema: str):
     return reduced_schedule
 
 
-def expand_json_schema(raw_schema: Dict, definitions: Dict):
+def expand_item_json_schema(expanded_property: Dict, resolver: Callable[[str], Dict]):
+    """Recursively expand "$ref"s in "item"s."""
+    if "items" not in expanded_property.keys():
+        return
+    elif "$ref" in expanded_property["items"]:
+        expanded_property["items"] = expand_json_schema(
+            resolver(expanded_property["items"]["$ref"]), resolver
+        )
+    else:
+        expand_item_json_schema(expanded_property["items"], resolver)
+
+
+def expand_json_schema(
+    raw_schema: Dict,
+    resolver: Callable[[str], Dict],
+):
     """Replace references by their value in the JSON Schema.
 
     This recursively follows the references to other schemas in case
-    of nested models. Other schemas are stored under the "definitions"
-    key in the schema of the top-level model.
+    of nested models. Other schemas that may exist at a higher level
+    within the overall schema may be referenced via the `$ref` keyword
+    according to the JSON Schema specification.
+
 
     Parameters
     ---------
     raw_schema
         The raw JSON schema as a Python dictionary, possibly with definitions
         and references.
-    definitions
-        The currently known definitions.
+    resolver
+        A function that takes a reference and returns the corresponding schema
+        or subschema from the currently scoped top-level schema.
 
     Returns
     -------
@@ -116,24 +167,30 @@ def expand_json_schema(raw_schema: Dict, definitions: Dict):
     expanded_properties = {}
 
     if "properties" in raw_schema:
+        if "$id" in raw_schema:
+            # see https://json-schema.org/understanding-json-schema/structuring#bundling
+            resolver = _ref_resolver(raw_schema)
+
         for name, value in raw_schema["properties"].items():
             if "$ref" in value:  # if item is a single element
                 expanded_properties[name] = expand_json_schema(
-                    definitions[value["$ref"]], definitions
+                    resolver(value["$ref"]), resolver
                 )
             elif "type" in value and value["type"] == "array":  # if item is a list
                 expanded_properties[name] = value
-                if "$ref" in value["items"]:
-                    expanded_properties[name]["items"] = expand_json_schema(
-                        definitions[value["items"]["$ref"]], definitions
-                    )
+
+                if "$ref" in value["items"] or (
+                    "type" in value["items"] and value["items"]["type"] == "array"
+                ):
+                    expand_item_json_schema(expanded_properties[name], resolver)
                 else:
                     expanded_properties[name]["items"] = value["items"]
+
             else:
                 expanded_properties[name] = value
 
         return {
-            "title": raw_schema["title"],
+            **({"title": raw_schema["title"]} if "title" in raw_schema else {}),
             "type": raw_schema["type"],
             "properties": expanded_properties,
         }
@@ -202,39 +259,50 @@ def match_step_to_regex(step):
     schedule's step.
 
     """
-    match step:
-        case str() as step:
-            return step
+    if isinstance(step, str):
+        return step
 
-        case {"enum": choices, "type": "string"}:
-            choices = [f'"{re.escape(choice)}"' for choice in choices]
-            return f"({'|'.join(choices)})"
-        case {"enum": choices}:
-            choices = [re.escape(str(choice)) for choice in choices]
+    if isinstance(step, dict):
+        keys = set(step.keys())
+
+        if all(key in keys for key in ("enum", "type")) and step["type"] == "string":
+            choices = [f'"{re.escape(choice)}"' for choice in step["enum"]]
             return f"({'|'.join(choices)})"
 
-        case {"type": "array", "items": items}:
-            item_regexes = match_step_to_regex(items)
+        elif "enum" in keys:
+            choices = [re.escape(str(choice)) for choice in step["enum"]]
+            return f"({'|'.join(choices)})"
+
+        elif all(key in keys for key in ("type", "items")) and step["type"] == "array":
+            item_regexes = match_step_to_regex(step["items"])
             return rf"\[({item_regexes})(,({item_regexes}))*\]"
 
-        case {"type": "object"} as object:
-            steps = build_schedule_from_schema(json.dumps(object))
+        elif "type" in keys and step["type"] == "object":
+            steps = build_schedule_from_schema(json.dumps(step))
             regex_str = ""
             for step in steps:
                 regex_str += match_step_to_regex(step)
             return regex_str
 
-        case {"type": "string", "maxLength": max_length}:
+        elif (
+            all(key in keys for key in ("type", "maxLength"))
+            and step["type"] == "string"
+        ):
+            max_length = step["maxLength"]
             return f'"{STRING_INNER}{{,{max_length}}}"'
-        case {"type": "string", "minLength": min_length}:
+
+        elif (
+            all(key in keys for key in ("type", "minLength"))
+            and step["type"] == "string"
+        ):
+            min_length = step["minLength"]
             return f'"{STRING_INNER}{{{min_length},}}"'
 
-        case {"type": field_type}:
-            return type_to_regex[field_type]
+        elif "type" in keys:
+            return type_to_regex[step["type"]]
 
-        case {"anyOf": choices}:
-            regexes = [match_step_to_regex(choice) for choice in choices]
+        elif "anyOf" in keys:
+            regexes = [match_step_to_regex(choice) for choice in step["anyOf"]]
             return rf"({'|'.join(regexes)})"
 
-        case _:
-            raise NotImplementedError
+    raise NotImplementedError

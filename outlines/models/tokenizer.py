@@ -1,15 +1,16 @@
 from abc import abstractmethod
-from typing import Dict, List, Protocol, Tuple, Union
+from typing import Dict, Hashable, List, Protocol, Set, Tuple, Union
 
 import numpy as np
 from numpy.typing import NDArray
 
 
-class Tokenizer(Protocol):
+class Tokenizer(Protocol, Hashable):
     eos_token: str
     eos_token_id: int
     pad_token_id: int
     vocabulary: Dict[str, int]
+    special_tokens: Set[int]
 
     @abstractmethod
     def encode(

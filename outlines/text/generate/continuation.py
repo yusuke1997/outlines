@@ -1,8 +1,11 @@
-from typing import List, Optional, Union
+from typing import TYPE_CHECKING, List, Optional, Union
 
 import torch
 
 from outlines.text.generate.sequence import Sequence
+
+if TYPE_CHECKING:
+    from outlines.text.generate.sample import Sampler
 
 
 class Continuation(Sequence):
@@ -18,9 +21,13 @@ class Continuation(Sequence):
     """
 
     def __init__(
-        self, model, max_tokens: Optional[int] = None, stop: Union[str, List[str]] = []
+        self,
+        model,
+        max_tokens: Optional[int] = None,
+        sampler: Optional["Sampler"] = None,
+        stop: Union[str, List[str]] = [],
     ):
-        super().__init__(model, max_tokens)
+        super().__init__(model, max_tokens, sampler)
         self.eos_token_id = torch.tensor(
             [self.model.tokenizer.eos_token_id], device=self.device
         )
@@ -46,22 +53,22 @@ class Continuation(Sequence):
 
         """
 
-        sequences = self.model.tokenizer.decode(token_ids)
-        contains_stop_sequence = []
-        for sequence in sequences:
-            found = False
-            for stop_str in self.stop_sequences:
-                if stop_str in sequence:
-                    found = True
-
-            contains_stop_sequence.append(found)
-
-        contains_stop_sequence = torch.tensor(
-            contains_stop_sequence, dtype=torch.bool, device=self.model.device
-        )
         contains_eos = token_ids[:, -1] == self.model.tokenizer.eos_token_id
 
-        return torch.logical_or(contains_eos, contains_stop_sequence)
+        if self.stop_sequences:
+            sequences = self.model.tokenizer.decode(token_ids)
+            contains_stop_sequence = []
+            for sequence in sequences:
+                contains_stop_sequence.append(
+                    any(stop_str in sequence for stop_str in self.stop_sequences)
+                )
+            contains_stop_sequence = torch.tensor(
+                contains_stop_sequence, dtype=torch.bool, device=self.model.device
+            )
+
+            return torch.logical_or(contains_eos, contains_stop_sequence)
+        else:
+            return contains_eos
 
     def postprocess_completions(self, completions: List[str]) -> List[str]:
         """Remove the EOS token from the completion.
@@ -89,7 +96,11 @@ class Continuation(Sequence):
 
 
 def continuation(
-    model, max_tokens: Optional[int] = None, *, stop: Union[str, List[str]] = []
+    model,
+    max_tokens: Optional[int] = None,
+    *,
+    sampler: Optional["Sampler"] = None,
+    stop: Union[str, List[str]] = [],
 ):
     """Generate text sequences.
 
@@ -99,9 +110,14 @@ def continuation(
         The language model to use to compute the next-token logits.
     max_tokens
         The maximum number of tokens to generate.
+    sampler
+        The function used to draw samples.  Defaults to
+        `outlines.text.generate.sample.multinomial`.  See
+        `outlines.text.generate.sample.Sampler` for the expected form of
+        such functions.
     stop
         A string or list of strings which, when generated, stops
         the generation for this sequence.
 
     """
-    return Continuation(model, max_tokens, stop)
+    return Continuation(model, max_tokens, sampler, stop)

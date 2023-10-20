@@ -159,6 +159,71 @@ def test_pydantic_list_object():
     ]
 
 
+def test_pydantic_recursive_list_object():
+    class ItemModel(BaseModel):
+        name: str
+
+    class ArrayModel1(BaseModel):
+        item_model_lists: List[List[ItemModel]]
+
+    class ArrayModel2(BaseModel):
+        nums: List[List[int]]
+
+    class ArrayModel3(BaseModel):
+        array_model_lists: List[List[ArrayModel1]]
+
+    schema = json.dumps(ArrayModel1.model_json_schema())
+    schedule = build_schedule_from_schema(schema)
+    array_model_1_schema = {
+        "items": {
+            "items": {
+                "title": "ItemModel",
+                "type": "object",
+                "properties": {"name": {"title": "Name", "type": "string"}},
+            },
+            "type": "array",
+        },
+        "title": "Item Model Lists",
+        "type": "array",
+    }
+    assert schedule == [
+        '\\{[\\n ]*"item_model_lists"[\\n ]*:[\\n ]*',
+        array_model_1_schema,
+        "[\\n ]*\\}",
+    ]
+
+    schema = json.dumps(ArrayModel2.model_json_schema())
+    schedule = build_schedule_from_schema(schema)
+    assert schedule == [
+        '\\{[\\n ]*"nums"[\\n ]*:[\\n ]*',
+        {
+            "items": {"items": {"type": "integer"}, "type": "array"},
+            "title": "Nums",
+            "type": "array",
+        },
+        "[\\n ]*\\}",
+    ]
+
+    schema = json.dumps(ArrayModel3.model_json_schema())
+    schedule = build_schedule_from_schema(schema)
+    assert schedule == [
+        '\\{[\\n ]*"array_model_lists"[\\n ]*:[\\n ]*',
+        {
+            "items": {
+                "items": {
+                    "title": "ArrayModel1",
+                    "type": "object",
+                    "properties": {"item_model_lists": array_model_1_schema},
+                },
+                "type": "array",
+            },
+            "title": "Array Model Lists",
+            "type": "array",
+        },
+        "[\\n ]*\\}",
+    ]
+
+
 def test_pydantic_union():
     """Schemas with Union types."""
 
@@ -186,6 +251,126 @@ def test_json_schema():
         '[\\n ]*,[\\n ]*"name"[\\n ]*:[\\n ]*',
         {"title": "Name", "type": "string"},
         "[\\n ]*\\}",
+    ]
+
+
+def test_json_schema_no_titles():
+    schema = '{"type": "object", "properties": {"user_id": {"type": "integer"}, "name": {"type": "string"}}, "required": ["user_id", "name"]}'
+    schedule = build_schedule_from_schema(schema)
+    assert schedule == [
+        '\\{[\\n ]*"user_id"[\\n ]*:[\\n ]*',
+        {"type": "integer"},
+        '[\\n ]*,[\\n ]*"name"[\\n ]*:[\\n ]*',
+        {"type": "string"},
+        "[\\n ]*\\}",
+    ]
+
+
+def test_json_schema_with_property_ref():
+    schema = """{
+        "title": "User",
+        "type": "object",
+        "properties": {
+            "user_id": {"title": "User Id", "type": "integer"},
+            "name": {"title": "Name", "type": "string"},
+            "a": {"$ref": "#/properties/name"},
+            "b": {"$ref": "#/properties/name"},
+            "c": {"$ref": "#/properties/name"}
+        },
+        "required": ["user_id", "name"]}
+    """
+    schedule = build_schedule_from_schema(schema)
+    assert schedule == [
+        '\\{[\\n ]*"user_id"[\\n ]*:[\\n ]*',
+        {"title": "User Id", "type": "integer"},
+        '[\\n ]*,[\\n ]*"name"[\\n ]*:[\\n ]*',
+        {"title": "Name", "type": "string"},
+        '[\\n ]*,[\\n ]*"a"[\\n ]*:[\\n ]*',
+        {"title": "Name", "type": "string"},
+        '[\\n ]*,[\\n ]*"b"[\\n ]*:[\\n ]*',
+        {"title": "Name", "type": "string"},
+        '[\\n ]*,[\\n ]*"c"[\\n ]*:[\\n ]*',
+        {"title": "Name", "type": "string"},
+        "[\\n ]*\\}",
+    ]
+
+
+def test_json_schema_with_def_ref():
+    schema = """{
+        "title": "User",
+        "type": "object",
+        "$defs": {
+            "name": {"title": "Name2", "type": "string"}
+        },
+        "properties": {
+            "user_id": {"title": "User Id", "type": "integer"},
+            "name": {"title": "Name", "type": "string"},
+            "name2": {"$ref": "#/$defs/name"}
+        },
+        "required": ["user_id", "name"]}
+    """
+    schedule = build_schedule_from_schema(schema)
+    assert schedule == [
+        '\\{[\\n ]*"user_id"[\\n ]*:[\\n ]*',
+        {"title": "User Id", "type": "integer"},
+        '[\\n ]*,[\\n ]*"name"[\\n ]*:[\\n ]*',
+        {"title": "Name", "type": "string"},
+        '[\\n ]*,[\\n ]*"name2"[\\n ]*:[\\n ]*',
+        {"title": "Name2", "type": "string"},
+        "[\\n ]*\\}",
+    ]
+
+
+def test_json_schema_with_bundled_ref():
+    schema = """{
+        "$id": "https://example.com/schemas/customer",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Customer",
+        "type": "object",
+        "properties": {
+            "first_name": { "type": "string" },
+            "last_name": { "type": "string" },
+            "shipping_address": { "$ref": "/schemas/address" },
+            "billing_address": { "$ref": "/schemas/address" }
+        },
+        "required": ["first_name", "last_name", "shipping_address", "billing_address"],
+        "$defs": {
+            "address": {
+                "title": "Address",
+                "$id": "/schemas/address",
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "type": "object",
+                "properties": {
+                    "street_address": { "type": "string" },
+                    "city": { "type": "string" },
+                    "state": { "$ref": "#/definitions/state" }
+                },
+                "required": ["street_address", "city", "state"],
+                "definitions": {
+                    "state": { "type": "object", "title": "State", "properties": { "name": { "type": "string" } }, "required": ["name"] }
+                }
+            }
+        }
+    }"""
+    schedule = build_schedule_from_schema(schema)
+    assert schedule == [
+        '\\{[\\n ]*"first_name"[\\n ]*:[\\n ]*',
+        {"type": "string"},
+        '[\\n ]*,[\\n ]*"last_name"[\\n ]*:[\\n ]*',
+        {"type": "string"},
+        '[\\n ]*,[\\n ]*"shipping_address"[\\n ]*:[\\n ]*\\{[\\n ]*"street_address"[\\n ]*:[\\n ]*',
+        {"type": "string"},
+        '[\\n ]*,[\\n ]*"city"[\\n ]*:[\\n ]*',
+        {"type": "string"},
+        '[\\n ]*,[\\n ]*"state"[\\n ]*:[\\n ]*\\{[\\n ]*"name"[\\n ]*:[\\n ]*',
+        {"type": "string"},
+        '[\\n ]*\\}[\\n ]*\\}[\\n ]*,[\\n ]*"billing_address"[\\n ]*:[\\n ]*\\{[\\n ]*"street_address"[\\n ]*:[\\n ]*',
+        {"type": "string"},
+        '[\\n ]*,[\\n ]*"city"[\\n ]*:[\\n ]*',
+        {"type": "string"},
+        '[\\n ]*,[\\n ]*"state"[\\n ]*:[\\n ]*\\{[\\n ]*"name"[\\n ]*:[\\n ]*',
+        {"type": "string"},
+        "[\\n ]*\\}[\\n ]*\\}[\\n ]*\\}",
     ]
 
 
